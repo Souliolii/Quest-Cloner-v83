@@ -1,4 +1,5 @@
 import os
+import sys
 import shutil
 import copy
 import tkinter as tk
@@ -15,7 +16,14 @@ FILES = [
     "Say.img.xml",
 ]
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# When frozen as an EXE, use the folder of the executable.
+# When running as a .py, use the folder of this script.
+if getattr(sys, "frozen", False):
+    # PyInstaller onefile EXE
+    SCRIPT_DIR = os.path.dirname(sys.executable)
+else:
+    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
 
 # ---------- Dark theme ----------
 
@@ -517,6 +525,10 @@ class QuestHelperGUI:
         self.check_tree, self.check_root = load_xml(os.path.join(SCRIPT_DIR, "Check.img.xml"))
         self.act_tree, self.act_root = load_xml(os.path.join(SCRIPT_DIR, "Act.img.xml"))
 
+        # cache for left-side quest list + search text
+        self.all_quests = []
+        self.search_var = tk.StringVar()
+
         self._build_ui()
         if self.qroot is not None:
             self.populate_listbox()
@@ -565,10 +577,22 @@ class QuestHelperGUI:
         # left quest list
         left = ttk.Frame(main)
         left.grid(row=0, column=0, rowspan=2, sticky="nsew", padx=(0,10))
-        left.rowconfigure(1, weight=1)
-        ttk.Label(left, text="Quests in QuestInfo.img.xml").grid(row=0,column=0,sticky="w")
+        # row 0 = label, row 1 = search, row 2 = listbox
+        left.rowconfigure(2, weight=1)
+
+        ttk.Label(left, text="Quests in QuestInfo.img.xml").grid(row=0, column=0, sticky="w")
+
+        # search bar
+        search_frame = ttk.Frame(left)
+        search_frame.grid(row=1, column=0, sticky="we", pady=(2, 2))
+        ttk.Label(search_frame, text="Search:").pack(side="left")
+        search_entry = ttk.Entry(search_frame, textvariable=self.search_var, width=20)
+        search_entry.pack(side="left", fill="x", expand=True)
+        search_entry.bind("<KeyRelease>", self.on_search)
+
+        # listbox
         self.quest_list = tk.Listbox(left, width=28, height=35, highlightbackground=DARK_HIGHLIGHT)
-        self.quest_list.grid(row=1,column=0,sticky="nsew")
+        self.quest_list.grid(row=2, column=0, sticky="nsew")
         self.quest_list.bind("<<ListboxSelect>>", self.on_list_select)
 
         # top bar
@@ -708,6 +732,8 @@ class QuestHelperGUI:
     # ---------- data loading ----------
 
     def populate_listbox(self):
+        # rebuild full quest cache from QuestInfo
+        self.all_quests = []
         self.quest_list.delete(0, tk.END)
         if self.qroot is None:
             return
@@ -716,8 +742,28 @@ class QuestHelperGUI:
             if not (qid and qid.isdigit()):
                 continue
             qd = extract_questinfo(self.qroot, int(qid))
-            name = qd["name"]
-            self.quest_list.insert(tk.END, f"{qid}: {name}")
+            name = qd["name"] or ""
+            self.all_quests.append((qid, name))
+        # show everything (no filter) by default
+        self._refresh_listbox("")
+
+    def _refresh_listbox(self, filter_text: str):
+        """Refresh quest_list from self.all_quests using optional filter."""
+        self.quest_list.delete(0, tk.END)
+        ft = (filter_text or "").lower()
+        for qid, name in self.all_quests:
+            line = f"{qid}: {name}"
+            if not ft:
+                self.quest_list.insert(tk.END, line)
+            else:
+                # match on ID or name substring
+                if ft in qid or ft in name.lower():
+                    self.quest_list.insert(tk.END, line)
+
+    def on_search(self, event=None):
+        """Called when user types in the search box."""
+        text = self.search_var.get()
+        self._refresh_listbox(text)
 
     def on_list_select(self, event):
         if not self.quest_list.curselection():
@@ -946,18 +992,40 @@ class QuestHelperGUI:
     # ---------- delete quest ----------
 
     def delete_quest(self):
-        """Delete quest by New ID from all XMLs (New ID required)."""
-        qid_str = self.new_id_var.get().strip()
+        """Delete quest from all XMLs.
+        Priority:
+          1) Currently selected quest in the left list
+          2) Quest ID in New ID field
+        """
+        qid_str = None
+
+        # 1) Try selected quest in the list
+        if self.quest_list.curselection():
+            idx = self.quest_list.curselection()[0]
+            line = self.quest_list.get(idx)
+            qid_str = line.split(":", 1)[0].strip()
+
+        # 2) Fallback to New ID field if nothing selected
         if not qid_str:
-            messagebox.showwarning("Delete Quest", "Enter a quest ID in New ID to delete.")
+            qid_str = self.new_id_var.get().strip()
+
+        if not qid_str:
+            messagebox.showwarning(
+                "Delete Quest",
+                "Select a quest on the left OR enter a quest ID in New ID."
+            )
             return
+
         if not qid_str.isdigit():
             messagebox.showwarning("Delete Quest", "Quest ID must be a number.")
             return
+
         qid = int(qid_str)
-        if not messagebox.askyesno("Delete Quest",
-                                   f"Delete quest {qid} from all XMLs?\n"
-                                   "Backups (.bak) will be created first."):
+        if not messagebox.askyesno(
+            "Delete Quest",
+            f"Delete quest {qid} from all XMLs?\n"
+            "Backups (.bak) will be created first."
+        ):
             return
 
         messages = []
@@ -979,13 +1047,15 @@ class QuestHelperGUI:
                 tree.write(path, encoding="utf-8", xml_declaration=True)
             else:
                 messages.append(f"{fname}: quest {qid} not present.")
-        # reload QuestInfo etc so list updates
+
+        # reload so the list + previews are up-to-date
         self.qtree, self.qroot = load_xml(os.path.join(SCRIPT_DIR, "QuestInfo.img.xml"))
         self.check_tree, self.check_root = load_xml(os.path.join(SCRIPT_DIR, "Check.img.xml"))
         self.act_tree, self.act_root = load_xml(os.path.join(SCRIPT_DIR, "Act.img.xml"))
         self.populate_listbox()
         self.preview_ids()
         messagebox.showinfo("Delete Quest", "\n".join(messages))
+
 
 if __name__ == "__main__":
     root = tk.Tk()
