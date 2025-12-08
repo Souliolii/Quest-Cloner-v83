@@ -434,63 +434,74 @@ def extract_rewards(root, quest_id:int):
     info["items_lose_text"] = "\n".join(f"{i} {c}" for i,c in lose)
     return info
 
-def apply_rewards(root, quest_id:int, rewards:dict):
+def apply_rewards(root, quest_id: int, rewards: dict):
+    """Write EXP + item rewards in Act.img.xml for quest_id.
+
+    Rules:
+      - All rewards live under stage '1' (completion).
+      - Stage '0' is never allowed to hold exp/item data.
+    """
     if root is None or rewards is None:
         return
+
+    any_detail = any(rewards.get(k) for k in ("exp", "items_gain_text", "items_lose_text"))
     node = get_imgdir(root, quest_id)
-    any_detail = any(rewards.get(k) for k in ("exp","items_gain_text","items_lose_text"))
     if node is None:
         if not any_detail:
             return
         node = ET.SubElement(root, "imgdir", name=str(quest_id))
+
+    # ---- Make sure stage '0' has no rewards ----
+    stage0 = node.find("./imgdir[@name='0']")
+    if stage0 is not None:
+        for child in list(stage0):
+            if child.tag == "int" and child.get("name") == "exp":
+                stage0.remove(child)
+            elif child.tag == "imgdir" and child.get("name") == "item":
+                stage0.remove(child)
+
+    # ---- Ensure we have stage '1' (complete) ----
+    complete = node.find("./imgdir[@name='1']")
+    if complete is None:
+        complete = ET.SubElement(node, "imgdir", name="1")
+
+    # Clear old exp + item from stage 1 only
+    for child in list(complete):
+        if child.tag == "int" and child.get("name") == "exp":
+            complete.remove(child)
+        elif child.tag == "imgdir" and child.get("name") == "item":
+            complete.remove(child)
+
+    # --- EXP reward ---
     exp_val = rewards.get("exp")
-    if exp_val not in (None,""):
+    if exp_val not in (None, "", "0"):
         try:
             exp_int = int(exp_val)
         except ValueError:
             exp_int = None
         if exp_int is not None:
-            target_int = None
-            for stage in node.findall("./imgdir"):
-                for child in stage.findall("./int"):
-                    if child.get("name")=="exp":
-                        target_int = child; break
-                if target_int is not None: break
-            if target_int is not None:
-                target_int.set("value", str(exp_int))
-            else:
-                stage = node.find("./imgdir[@name='1']") or node.find("./imgdir[@name='0']")
-                if stage is None:
-                    stage = ET.SubElement(node, "imgdir", name="1")
-                ET.SubElement(stage, "int", name="exp", value=str(exp_int))
-    def clear_item_children():
-        for stage in node.findall("./imgdir"):
-            child = stage.find("./imgdir[@name='item']")
-            if child is not None:
-                stage.remove(child)
-    def pick_stage_for_item():
-        for st in node.findall("./imgdir"):
-            if st.find("./imgdir[@name='item']") is not None:
-                return st
-        st = node.find("./imgdir[@name='1']")
-        if st is None:
-            st = ET.SubElement(node, "imgdir", name="1")
-        return st
+            ET.SubElement(complete, "int", name="exp", value=str(exp_int))
+
+    # --- Item rewards ---
     gain_pairs = _parse_id_count_lines(rewards.get("items_gain_text") or "")
     lose_pairs = _parse_id_count_lines(rewards.get("items_lose_text") or "")
-    clear_item_children()
+
     if gain_pairs or lose_pairs:
-        st = pick_stage_for_item()
-        parent = ET.SubElement(st, "imgdir", name="item")
-        idx=0
-        for iid,count in gain_pairs:
-            e = ET.SubElement(parent, "imgdir", name=str(idx)); idx+=1
-            ET.SubElement(e, "int", name="id", value=str(iid))
-            ET.SubElement(e, "int", name="count", value=str(count))
-        for iid,count in lose_pairs:
-            e = ET.SubElement(parent, "imgdir", name=str(idx)); idx+=1
-            ET.SubElement(e, "int", name="id", value=str(iid))
-            ET.SubElement(e, "int", name="count", value=str(-count))
+        item_parent = ET.SubElement(complete, "imgdir", name="item")
+        idx = 0
+        # positive count = gain
+        for iid, count in gain_pairs:
+            slot = ET.SubElement(item_parent, "imgdir", name=str(idx))
+            idx += 1
+            ET.SubElement(slot, "int", name="id", value=str(iid))
+            ET.SubElement(slot, "int", name="count", value=str(count))
+        # negative count = lose/consume
+        for iid, count in lose_pairs:
+            slot = ET.SubElement(item_parent, "imgdir", name=str(idx))
+            idx += 1
+            ET.SubElement(slot, "int", name="id", value=str(iid))
+            ET.SubElement(slot, "int", name="count", value=str(-count))
+
 
 # ---------- GUI ----------
 
