@@ -1,0 +1,1 @@
+py -m PyInstaller --noconsole --onefile quest_helper_gui.py
